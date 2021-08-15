@@ -87,6 +87,11 @@ Color_Mapping COLOR_PALLETTE[16] = {
 constexpr uint SCREEN_W = 80;
 constexpr uint SCREEN_H = 45;
 
+uint gameview_x = 0;
+uint gameview_y = 0;
+uint gameview_w = 65;
+uint gameview_h = 45;
+
 struct Screen_Tile {
 	u8 val;
 	u8 col; //4 bits fg, 4 bits bg
@@ -192,9 +197,14 @@ void generate_map() {
 }
 
 void render_map() {
-	for(int y = -15; y <= 15; y++) {
-		for(int x = -15; x <= 15; x++) {
-			Vec screen_pos = {(int)SCREEN_W / 2 + x, (int)SCREEN_H / 2 + y};
+	Vec center = {(int)(gameview_x + gameview_w / 2), (int)(gameview_y + gameview_h / 2)};
+	int bound_xl = -(int)gameview_w / 2;
+	int bound_xh =  (int)gameview_w / 2;
+	int bound_yl = -(int)gameview_h / 2;
+	int bound_yh =  (int)gameview_h / 2;
+	for(int y = bound_yl; y <= bound_yh; y++) {
+		for(int x = bound_xl; x <= bound_xh; x++) {
+			Vec screen_pos = {(int)center.x + x, (int)center.y + y};
 			auto player_pos = get_entity(player_entity)->pos;
 			auto map_tile = read_map({player_pos.x + x, player_pos.y + y});
 			auto tile = map_tile.tile;
@@ -214,11 +224,19 @@ void move_entity(uint id, Vec off) {
 	Vec pos = entity->pos;
 	assert(map[pos.y][pos.x].entity == id);
 	map[pos.y][pos.x].entity = 0;
-	entity->pos.x += off.x;
-	entity->pos.y += off.y;
 
-	pos = entity->pos;
-	assert(is_pos_valid(pos));
+	pos.x += off.x;
+	pos.y += off.y;
+	//assert(is_pos_valid(pos));
+
+	//@TODO line collision test
+	auto tile = read_map(pos);
+
+	if(tile.passable && tile.entity == 0) {
+		entity->pos = pos;
+	} else {
+		pos = entity->pos;
+	}
 	map[pos.y][pos.x].entity = id;
 }
 
@@ -257,6 +275,11 @@ Entity_Type human = {
 	TILE('H', YELLOW, BLACK),
 };
 
+Entity_Type goblin = {
+	"Goblin",
+	TILE('G', GREEN, BLACK),
+};
+
 uint spawn_entity(const Entity_Type* type, Vec pos) {
 	assert(entity_num < ARRAY_LEN(entities));
 	assert(is_pos_valid(pos));
@@ -273,6 +296,32 @@ uint spawn_entity(const Entity_Type* type, Vec pos) {
 
 void spawn_player() {
 	player_entity = spawn_entity(&human, {MAP_W / 2, MAP_H / 2});
+}
+
+void spawn_goblins() {
+	uint num = 32;
+	for(uint i = 0; i < num; ++i) {
+		Vec pos = {rand() % MAP_W, rand() % MAP_H};
+		spawn_entity(&goblin, pos);
+	}
+}
+
+void simulate_goblins() {
+	for(uint i = 0; i < entity_num; ++i) {
+		uint id = i + 1;
+		Entity* e = get_entity(id);
+		if(e->type == &goblin) {
+			bool x = rand() % 2;
+			bool s = rand() % 2;
+			Vec off = {0, 0};
+			if(x) {
+				off.x = s ? -1 : 1;
+			} else {
+				off.y = s ? -1 : 1;
+			}
+			move_entity(id, off);
+		}
+	}
 }
 
 //required for SDL on cygwin to work for some reason
@@ -321,9 +370,14 @@ int main()
 
 	generate_map();
 	spawn_player();
+	spawn_goblins();
 
+	uint t = 0;
 	while(not is_quitting) {
 		handle_input();
+		if(t % 15 == 0) {
+			simulate_goblins();
+		}
 		memset(screen, 0, sizeof(screen));
 		render_map();
 
@@ -332,6 +386,7 @@ int main()
 
 		SDL_RenderPresent(renderer);
 		SDL_Delay(15);
+		t++;
 	}
 
 	return EXIT_SUCCESS;
