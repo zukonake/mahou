@@ -1,6 +1,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <cstdlib>
+#include <cassert>
 #include <iostream>
 
 using uint	= unsigned;
@@ -22,7 +23,6 @@ template<typename F> Deferrer<F> operator*(DeferDummy, F f) { return {f}; }
 #define LUX_DEFER auto LUX_DEFER_1(__LINE__) = DeferDummy { } *[&]()ate<typename F> Deferrer<F> operator*(DeferDummy, F f) { return {f}; }
 #define DEFER_0(LINE) zz_defer##LINE
 #define DEFER_1(LINE) DEFER_0(LINE)
-#define DEFER auto DEFER_1(__LINE__) = DeferDummy { } *[&]()
 /* use like this:
  * DEFER { some_stuff(); asdf(); };
  * 
@@ -30,25 +30,35 @@ template<typename F> Deferrer<F> operator*(DeferDummy, F f) { return {f}; }
  * DEFER is a destructor so, first defer to be defined, is going to be the last to be
  * called
  */
+#define DEFER auto DEFER_1(__LINE__) = DeferDummy { } *[&]()
+
+#define ARRAY_LEN(x) (sizeof(x) / sizeof(*x))
+
+struct Vec {
+	int x, y;
+};
 
 enum Color {
-	BLACK,
-	BLUE,
-	GREEN,
-	CYAN,
-	RED,
-	MAGENTA,
-	BROWN,
-	LGRAY,
-	DGRAY,
-	LBLUE,
-	LGREEN,
-	LCYAN,
-	LRED,
-	LMAGENTA,
-	YELLOW,
-	WHITE
+	BLACK		= 0x0,
+	BLUE		= 0x1,
+	GREEN		= 0x2,
+	CYAN		= 0x3,
+	RED			= 0x4,
+	MAGENTA		= 0x5,
+	BROWN		= 0x6,
+	LGRAY		= 0x7,
+	DGRAY		= 0x8,
+	LBLUE		= 0x9,
+	LGREEN		= 0xA,
+	LCYAN		= 0xB,
+	LRED		= 0xC,
+	LMAGENTA	= 0xD,
+	YELLOW		= 0xE,
+	WHITE		= 0xF
 };
+
+#define COL(fg, bg) ((fg << 4) | bg)
+#define TILE(ch, fg, bg) {ch, COL(fg, bg)}
 
 struct Color_Mapping {
 	u8 r, g, b;
@@ -74,19 +84,21 @@ Color_Mapping COLOR_PALLETTE[16] = {
 	{232, 227, 232}, //WHITE
 };
 
-constexpr uint SCREEN_W = 800/16;
-constexpr uint SCREEN_H = 600/16;
+constexpr uint SCREEN_W = 80;
+constexpr uint SCREEN_H = 45;
 
 struct Screen_Tile {
 	u8 val;
 	u8 col; //4 bits fg, 4 bits bg
 };
 
-Screen_Tile screen[SCREEN_H][SCREEN_W];
+//@TODO add redraw flag
+Screen_Tile		screen[SCREEN_H][SCREEN_W];
 SDL_Texture*	tileset;
 SDL_Renderer*	renderer;
+bool			is_quitting = false;
 
-void render_screen() {
+void blit_screen() {
 	for(uint y = 0; y < SCREEN_H; y++) {
 		for(uint x = 0; x < SCREEN_W; x++) {
 			auto* tile = &screen[y][x];
@@ -121,6 +133,148 @@ void render_screen() {
 	}
 }
 
+struct Entity_Type {
+	const char*	name;
+	Screen_Tile	tile;
+};
+
+struct Entity {
+	const Entity_Type*	type;
+	Vec					pos;
+};
+
+size_t	entity_num = 0;
+Entity	entities[0x1000];
+uint	player_entity = 0;
+
+Entity* get_entity(uint id) {
+	if(id == 0) return NULL;
+	id -= 1;
+	if(entity_num <= id) return NULL;
+	return &entities[id];
+}
+
+constexpr uint MAP_W = 80;
+constexpr uint MAP_H = 45;
+
+struct Map_Tile {
+	Screen_Tile tile;
+	bool		passable;
+	uint		entity;
+};
+
+Map_Tile map[100][100];
+
+bool is_pos_valid(Vec p) {
+	return not (p.x < 0 || p.y < 0 || p.x >= MAP_W || p.y >= MAP_H);
+}
+
+Map_Tile read_map(Vec p) {
+	const Map_Tile border = {{0xDB, 0xf0}, false};
+	if(not is_pos_valid(p)) {
+		return border;
+	}
+	return map[p.y][p.x];
+}
+
+void generate_map() {
+	const Map_Tile floor = {{'.', 0xf0}, true};
+	const Map_Tile wall  = {{'#', 0xf0}, false};
+	for(uint y = 0; y < MAP_H; y++) {
+		for(uint x = 0; x < MAP_W; x++) {
+			if(rand() % 10 == 0) {
+				map[y][x] = wall;
+			} else {
+				map[y][x] = floor;
+			}
+		}
+	}
+}
+
+void render_map() {
+	for(int y = -15; y <= 15; y++) {
+		for(int x = -15; x <= 15; x++) {
+			Vec screen_pos = {(int)SCREEN_W / 2 + x, (int)SCREEN_H / 2 + y};
+			auto player_pos = get_entity(player_entity)->pos;
+			auto map_tile = read_map({player_pos.x + x, player_pos.y + y});
+			auto tile = map_tile.tile;
+			if(map_tile.entity != 0) {
+				Entity* entity = get_entity(map_tile.entity);
+				tile = entity->type->tile;
+			}
+			screen[screen_pos.y][screen_pos.x] = tile;
+		}
+	}
+}
+
+void move_entity(uint id, Vec off) {
+	assert(entity_num >= id);
+	Entity* entity = get_entity(id);
+
+	Vec pos = entity->pos;
+	assert(map[pos.y][pos.x].entity == id);
+	map[pos.y][pos.x].entity = 0;
+	entity->pos.x += off.x;
+	entity->pos.y += off.y;
+
+	pos = entity->pos;
+	assert(is_pos_valid(pos));
+	map[pos.y][pos.x].entity = id;
+}
+
+void handle_input() {
+	SDL_Event e;
+    while(SDL_PollEvent(&e) != 0 ) {
+
+        if(e.type == SDL_QUIT) {
+            is_quitting = true;
+        } else if(e.type == SDL_KEYDOWN) {
+            switch(e.key.keysym.sym) {
+                case SDLK_UP:
+                move_entity(player_entity, {0, -1});
+                break;
+
+                case SDLK_DOWN:
+                move_entity(player_entity, {0, 1});
+                break;
+
+                case SDLK_LEFT:
+                move_entity(player_entity, {-1, 0});
+                break;
+
+                case SDLK_RIGHT:
+                move_entity(player_entity, {1, 0});
+                break;
+
+                default: break;
+            }
+        }
+    }
+}
+
+Entity_Type human = {
+	"Human",
+	TILE('H', YELLOW, BLACK),
+};
+
+uint spawn_entity(const Entity_Type* type, Vec pos) {
+	assert(entity_num < ARRAY_LEN(entities));
+	assert(is_pos_valid(pos));
+	//@TODO what if entity already exists on this spot?
+
+	entities[entity_num] = {type, pos};
+	entity_num++;
+
+	assert(map[pos.y][pos.x].entity == 0);
+	map[pos.y][pos.x].entity = entity_num;
+
+	return entity_num;
+}
+
+void spawn_player() {
+	player_entity = spawn_entity(&human, {MAP_W / 2, MAP_H / 2});
+}
+
 //required for SDL on cygwin to work for some reason
 #ifdef main
 # undef main
@@ -137,7 +291,7 @@ int main()
 	}
 	DEFER { SDL_Quit(); };
 
-	SDL_Window* win = SDL_CreateWindow("Mahou", 100, 100, 800, 600, SDL_WINDOW_SHOWN);
+	SDL_Window* win = SDL_CreateWindow("Mahou", 100, 100, SCREEN_W*16, SCREEN_H*16, SDL_WINDOW_SHOWN);
 	if (win == nullptr) {
 		cerr << "SDL_CreateWindow Error: " << SDL_GetError() << endl;
 		return EXIT_FAILURE;
@@ -165,23 +319,19 @@ int main()
 	}
 	DEFER { SDL_DestroyTexture(tileset); };
 
+	generate_map();
+	spawn_player();
 
-	for (int i = 0; i < 20; i++) {
-		//clear screen
+	while(not is_quitting) {
+		handle_input();
 		memset(screen, 0, sizeof(screen));
-
-		screen[0][0] = {'P', 0x17};
-		screen[0][1] = {'o', 0x26};
-		screen[0][2] = {'g', 0x35};
-		screen[0][3] = {'g', 0x44};
-		screen[0][4] = {'e', 0x53};
-		screen[0][5] = {'r', 0x62};
-		screen[0][6] = {'s', 0x71};
+		render_map();
 
 		SDL_RenderClear(renderer);
-		render_screen();
+		blit_screen();
+
 		SDL_RenderPresent(renderer);
-		SDL_Delay(100);
+		SDL_Delay(15);
 	}
 
 	return EXIT_SUCCESS;
