@@ -8,6 +8,7 @@
 using uint	= unsigned;
 using u8	= uint8_t;
 using u32	= uint32_t;
+using u64	= uint64_t;
 
 ///zero-overhead defer mechanism in c++, neat
 struct DeferDummy {};
@@ -98,8 +99,8 @@ struct Screen_Tile {
 	u8 col; //4 bits fg, 4 bits bg
 };
 
-//@TODO add redraw flag
 Screen_Tile		screen[SCREEN_H][SCREEN_W];
+u64				screen_redraw[(SCREEN_H * SCREEN_W - 1) / 64 + 1];
 SDL_Texture*	tileset;
 SDL_Renderer*	renderer;
 bool			is_quitting = false;
@@ -107,6 +108,12 @@ bool			is_quitting = false;
 void blit_screen() {
 	for(uint y = 0; y < SCREEN_H; y++) {
 		for(uint x = 0; x < SCREEN_W; x++) {
+			uint id = x + y * SCREEN_W;
+			if(not (screen_redraw[id / 64] & (1ull << (id % 64)))) {
+				continue;
+			}
+			screen_redraw[id / 64] &= ~(1ull << (id % 64));
+
 			auto* tile = &screen[y][x];
 
 			Color bg = (Color)(tile->col & 0x0f);
@@ -197,6 +204,14 @@ void generate_map() {
 	}
 }
 
+void set_screen(Vec pos, Screen_Tile val) {
+	if(memcmp(&screen[pos.y][pos.x], &val, sizeof(Screen_Tile)) != 0) {
+		uint id = pos.x + pos.y * SCREEN_W;
+		screen_redraw[id / 64] |= 1ull << (id % 64);
+		screen[pos.y][pos.x] = val;
+	}
+}
+
 void render_map() {
 	Vec center = {(int)(gameview_x + gameview_w / 2), (int)(gameview_y + gameview_h / 2)};
 	int bound_xl = -(int)gameview_w / 2;
@@ -213,7 +228,7 @@ void render_map() {
 				Entity* entity = get_entity(map_tile.entity);
 				tile = entity->type->tile;
 			}
-			screen[screen_pos.y][screen_pos.x] = tile;
+			set_screen(screen_pos, tile);
 		}
 	}
 }
@@ -382,10 +397,8 @@ int main()
 		if(t % 15 == 0) {
 			simulate_goblins();
 		}
-		memset(screen, 0, sizeof(screen));
 		render_map();
 
-		SDL_RenderClear(renderer);
 		blit_screen();
 
 		SDL_RenderPresent(renderer);
