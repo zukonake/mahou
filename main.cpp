@@ -1,6 +1,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <cstdlib>
+#include <ctime>
 #include <cassert>
 #include <iostream>
 
@@ -283,12 +284,14 @@ Entity_Type goblin = {
 uint spawn_entity(const Entity_Type* type, Vec pos) {
 	assert(entity_num < ARRAY_LEN(entities));
 	assert(is_pos_valid(pos));
-	//@TODO what if entity already exists on this spot?
+
+	if(map[pos.y][pos.x].entity != 0) {
+		return 0;
+	}
 
 	entities[entity_num] = {type, pos};
 	entity_num++;
 
-	assert(map[pos.y][pos.x].entity == 0);
 	map[pos.y][pos.x].entity = entity_num;
 
 	return entity_num;
@@ -331,6 +334,7 @@ void simulate_goblins() {
 
 int main()
 {
+	srand(time(NULL));
 	using std::cerr;
 	using std::endl;
 
