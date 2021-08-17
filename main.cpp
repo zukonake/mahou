@@ -151,11 +151,16 @@ void blit_screen() {
 struct Entity_Type {
 	const char*	name;
 	Screen_Tile	tile;
+	uint				max_hp;
+	uint				dmg;
 };
 
 struct Entity {
 	const Entity_Type*	type;
 	Vec					pos;
+	int					max_hp;
+	uint				hp;
+	uint				dmg;
 };
 
 size_t	entity_num = 0;
@@ -269,6 +274,18 @@ void render_ui() {
 	}
 }
 
+void attack_entity(uint att_id, uint def_id) {
+	Entity* attacker = get_entity(att_id);
+	Entity* defender = get_entity(def_id);
+	assert(att_id != def_id);
+	if(att_id == player_entity) {
+		game_log("you hit %s", defender->type->name);
+	}
+	if(def_id == player_entity) {
+		game_log("you got hit by %s", attacker->type->name);
+	}
+}
+
 void move_entity(uint id, Vec off) {
 	assert(entity_num >= id);
 	Entity* entity = get_entity(id);
@@ -279,10 +296,13 @@ void move_entity(uint id, Vec off) {
 
 	pos.x += off.x;
 	pos.y += off.y;
-	//assert(is_pos_valid(pos));
 
 	//@TODO line collision test
 	auto tile = read_map(pos);
+
+	if(tile.entity != 0) {
+		attack_entity(id, tile.entity);
+	}
 
 	if(tile.passable && tile.entity == 0) {
 		entity->pos = pos;
@@ -325,11 +345,15 @@ void handle_input() {
 Entity_Type human = {
 	"Human",
 	TILE('H', YELLOW, BLACK),
+	.max_hp = 10,
+	.dmg = 3,
 };
 
 Entity_Type goblin = {
 	"Goblin",
 	TILE('G', GREEN, BLACK),
+	.max_hp = 7,
+	.dmg = 2,
 };
 
 uint spawn_entity(const Entity_Type* type, Vec pos) {
@@ -340,7 +364,11 @@ uint spawn_entity(const Entity_Type* type, Vec pos) {
 		return 0;
 	}
 
-	entities[entity_num] = {type, pos};
+	auto* entity = &entities[entity_num];
+	entity->type = type;
+	entity->pos = pos;
+	entity->max_hp = type->max_hp;
+	entity->dmg = type->dmg;
 	entity_num++;
 
 	map[pos.y][pos.x].entity = entity_num;
@@ -355,7 +383,7 @@ void spawn_player() {
 void spawn_goblins() {
 	uint num = 32;
 	for(uint i = 0; i < num; ++i) {
-		Vec pos = {rand() % MAP_W, rand() % MAP_H};
+		Vec pos = {(int)(rand() % MAP_W), (int)(rand() % MAP_H)};
 		spawn_entity(&goblin, pos);
 	}
 }
