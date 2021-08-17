@@ -86,12 +86,14 @@ Color_Mapping COLOR_PALLETTE[16] = {
 	{232, 227, 232}, //WHITE
 };
 
+char log_buffer[0x400];
+
 constexpr uint SCREEN_W = 80;
 constexpr uint SCREEN_H = 45;
 
 uint gameview_x = 0;
 uint gameview_y = 0;
-uint gameview_w = 65;
+uint gameview_w = 45;
 uint gameview_h = 45;
 
 struct Screen_Tile {
@@ -230,6 +232,40 @@ void render_map() {
 			}
 			set_screen(screen_pos, tile);
 		}
+	}
+}
+
+template<typename... Args>
+void game_log(const char* fmt, Args... args) {
+	uint len = snprintf(NULL, 0, fmt, args...) + 1;
+	if(len > ARRAY_LEN(log_buffer)) len = ARRAY_LEN(log_buffer);
+	memmove(log_buffer + len, log_buffer, ARRAY_LEN(log_buffer) - len);
+	snprintf(log_buffer, len, fmt, args...);
+}
+
+void render_ui() {
+	int bound_xh = gameview_w + gameview_x;
+	for(int y = 0; y < SCREEN_H; y++) {
+		set_screen({bound_xh, y}, TILE(0xBA, WHITE, BLACK));
+	}
+	Vec cursor = {bound_xh + 1, 0};
+	for(const char* it = log_buffer; it < log_buffer + ARRAY_LEN(log_buffer); it++) {
+		if(*it == 0 || *it == '\n') {
+			for(; cursor.x < SCREEN_W; ++cursor.x) {
+				set_screen(cursor, TILE(0x00, WHITE, BLACK));
+			}
+			cursor.x--;
+		}
+
+		if(cursor.x >= SCREEN_W) {
+			cursor.x = bound_xh + 1;
+			cursor.y++;
+		}
+		if(cursor.y >= SCREEN_H) {
+			break;
+		}
+		set_screen(cursor, TILE((u8)*it, WHITE, BLACK));
+		cursor.x++;
 	}
 }
 
@@ -390,6 +426,7 @@ int main()
 	generate_map();
 	spawn_player();
 	spawn_goblins();
+	memset(screen_redraw, 0xff, sizeof(screen_redraw));
 
 	uint t = 0;
 	while(not is_quitting) {
@@ -398,6 +435,7 @@ int main()
 			simulate_goblins();
 		}
 		render_map();
+		render_ui();
 
 		blit_screen();
 
