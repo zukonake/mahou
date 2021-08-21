@@ -158,8 +158,8 @@ struct Entity_Type {
 struct Entity {
 	const Entity_Type*	type;
 	Vec					pos;
-	int					max_hp;
-	uint				hp;
+	uint				max_hp;
+	int					hp;
 	uint				dmg;
 };
 
@@ -171,7 +171,11 @@ Entity* get_entity(uint id) {
 	if(id == 0) return NULL;
 	id -= 1;
 	if(entity_num <= id) return NULL;
-	return &entities[id];
+	Entity *e = &entities[id];
+	if(e->type == NULL) {
+		return NULL;
+	}
+	return e;
 }
 
 constexpr uint MAP_W = 80;
@@ -284,11 +288,19 @@ void attack_entity(uint att_id, uint def_id) {
 	if(def_id == player_entity) {
 		game_log("you got hit by %s", attacker->type->name);
 	}
+	defender->hp -= attacker->dmg;
+	if(defender->hp < 0) {
+		defender->hp = 0;
+		game_log("%s died!", defender->type->name);
+		map[defender->pos.y][defender->pos.x].entity = 0;
+		defender->type = NULL;
+	}
 }
 
 void move_entity(uint id, Vec off) {
 	assert(entity_num >= id);
 	Entity* entity = get_entity(id);
+	assert(entity != NULL);
 
 	Vec pos = entity->pos;
 	assert(map[pos.y][pos.x].entity == id);
@@ -312,35 +324,6 @@ void move_entity(uint id, Vec off) {
 	map[pos.y][pos.x].entity = id;
 }
 
-void handle_input() {
-	SDL_Event e;
-    while(SDL_PollEvent(&e) != 0 ) {
-
-        if(e.type == SDL_QUIT) {
-            is_quitting = true;
-        } else if(e.type == SDL_KEYDOWN) {
-            switch(e.key.keysym.sym) {
-                case SDLK_UP:
-                move_entity(player_entity, {0, -1});
-                break;
-
-                case SDLK_DOWN:
-                move_entity(player_entity, {0, 1});
-                break;
-
-                case SDLK_LEFT:
-                move_entity(player_entity, {-1, 0});
-                break;
-
-                case SDLK_RIGHT:
-                move_entity(player_entity, {1, 0});
-                break;
-
-                default: break;
-            }
-        }
-    }
-}
 
 Entity_Type human = {
 	"Human",
@@ -368,6 +351,7 @@ uint spawn_entity(const Entity_Type* type, Vec pos) {
 	entity->type = type;
 	entity->pos = pos;
 	entity->max_hp = type->max_hp;
+	entity->hp = entity->max_hp;
 	entity->dmg = type->dmg;
 	entity_num++;
 
@@ -392,20 +376,58 @@ void simulate_goblins() {
 	for(uint i = 0; i < entity_num; ++i) {
 		uint id = i + 1;
 		Entity* e = get_entity(id);
-		if(e->type == &goblin) {
-			bool x = rand() % 2;
-			bool s = rand() % 2;
-			Vec off = {0, 0};
-			if(x) {
-				off.x = s ? -1 : 1;
-			} else {
-				off.y = s ? -1 : 1;
+		if(e != NULL) {
+			if(e->hp < e->max_hp / 3) {
+				auto* tile = &map[e->pos.y][e->pos.x].tile;
+				tile->col &= 0x00;
+				tile->col |= BLACK << 4;
+				tile->col |= RED;
 			}
-			move_entity(id, off);
+			if(e->type == &goblin) {
+				bool x = rand() % 2;
+				bool s = rand() % 2;
+				Vec off = {0, 0};
+				if(x) {
+					off.x = s ? -1 : 1;
+				} else {
+					off.y = s ? -1 : 1;
+				}
+				move_entity(id, off);
+			}
 		}
 	}
 }
 
+void handle_input() {
+	SDL_Event e;
+    while(SDL_PollEvent(&e) != 0 ) {
+
+        if(e.type == SDL_QUIT) {
+            is_quitting = true;
+        } else if(e.type == SDL_KEYDOWN) {
+			simulate_goblins();
+            switch(e.key.keysym.sym) {
+                case SDLK_UP:
+                move_entity(player_entity, {0, -1});
+                break;
+
+                case SDLK_DOWN:
+                move_entity(player_entity, {0, 1});
+                break;
+
+                case SDLK_LEFT:
+                move_entity(player_entity, {-1, 0});
+                break;
+
+                case SDLK_RIGHT:
+                move_entity(player_entity, {1, 0});
+                break;
+
+                default: break;
+            }
+        }
+    }
+}
 //required for SDL on cygwin to work for some reason
 #ifdef main
 # undef main
@@ -459,9 +481,6 @@ int main()
 	uint t = 0;
 	while(not is_quitting) {
 		handle_input();
-		if(t % 15 == 0) {
-			simulate_goblins();
-		}
 		render_map();
 		render_ui();
 
