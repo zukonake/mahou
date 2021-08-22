@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <cassert>
+#include <unordered_map>
 #include <iostream>
 
 using uint	= unsigned;
@@ -40,6 +41,10 @@ struct Vec {
 	int x, y;
 };
 
+bool operator==(const Vec& a, const Vec& b) {
+	return a.x == b.x && a.y == b.y;
+}
+
 enum Color {
 	BLACK		= 0x0,
 	BLUE		= 0x1,
@@ -60,7 +65,7 @@ enum Color {
 };
 
 #define COL(fg, bg) ((fg << 4) | bg)
-#define TILE(ch, fg, bg) {ch, COL(fg, bg)}
+#define TILE(ch, fg, bg) {(u8)(ch), COL((fg), (bg))}
 
 struct Color_Mapping {
 	u8 r, g, b;
@@ -93,7 +98,7 @@ constexpr uint SCREEN_H = 45;
 
 uint gameview_x = 0;
 uint gameview_y = 0;
-uint gameview_w = 45;
+uint gameview_w = 45; //@TODO this crashes if even LUL
 uint gameview_h = 45;
 
 struct Screen_Tile {
@@ -106,6 +111,14 @@ u64				screen_redraw[(SCREEN_H * SCREEN_W - 1) / 64 + 1];
 SDL_Texture*	tileset;
 SDL_Renderer*	renderer;
 bool			is_quitting = false;
+
+template<typename... Args>
+void game_log(const char* fmt, Args... args) {
+	uint len = snprintf(NULL, 0, fmt, args...) + 1;
+	if(len > ARRAY_LEN(log_buffer)) len = ARRAY_LEN(log_buffer);
+	memmove(log_buffer + len, log_buffer, ARRAY_LEN(log_buffer) - len);
+	snprintf(log_buffer, len, fmt, args...);
+}
 
 void blit_screen() {
 	for(uint y = 0; y < SCREEN_H; y++) {
@@ -187,21 +200,160 @@ struct Map_Tile {
 	uint		entity;
 };
 
-Map_Tile map[100][100];
+#define CHUNK_W 16
+#define CHUNK_MAX_ENTITIES 1024
 
-bool is_pos_valid(Vec p) {
-	return not (p.x < 0 || p.y < 0 || p.x >= MAP_W || p.y >= MAP_H);
+struct Map_Chunk {
+	uint		last_access;
+
+	Map_Tile	data[CHUNK_W][CHUNK_W];
+};
+
+class VecHasher {
+public:
+    size_t operator()(const Vec& p) const
+    {
+        return ((u64)p.x & 0xffffffff) | (((u64)p.y & 0xffffffff) << 32ull);
+    }
+};
+
+uint game_turn_number = 0;
+std::unordered_map<Vec, Map_Chunk*, VecHasher> map_chunks;
+
+float fract(float x) {
+	return x - floor(x);
+}
+
+float frand(float x, float y){
+    return fract(sin(x * 12.9898f + y * 78.233) * 43758.5453f);
+}
+
+float lerp(float a, float b, float f) {
+	return f * (b - a) + a;
+}
+
+float value_noise(float x, float y) {
+	float lx = floor(x);
+	float ly = floor(y);
+	float fx = x - lx;
+	float fy = y - ly;
+
+	float v00 = frand(lx + 0.f, ly + 0.f);
+	float v01 = frand(lx + 1.f, ly + 0.f);
+	float v10 = frand(lx + 0.f, ly + 1.f);
+	float v11 = frand(lx + 1.f, ly + 1.f);
+
+	return lerp(lerp(v00, v01, fx), lerp(v10, v11, fx), fy);
+}
+
+float cerp(float a, float b, float c, float d, float f) {
+    float p = (d - c) - (a - b);
+    
+    return f * (f * (f * p + ((a - b) - p)) + (c - a)) + b;
+}
+
+float cubic_noise(float x, float y) {
+	float lx = floor(x);
+	float ly = floor(y);
+	float fx = x - lx;
+	float fy = y - ly;
+
+	float vy[4];
+	for(uint iy = 0; iy < 4; ++iy) {
+		float offy = (float)iy - 1.f;
+		float vx[4];
+		for(uint ix = 0; ix < 4; ++ix) {
+			float offx = (float)ix - 1.f;
+			vx[ix] = frand(lx + offx, ly + offy);
+		}
+		vy[iy] = cerp(vx[0], vx[1], vx[2], vx[3], fx);
+	}
+
+	return cerp(vy[0], vy[1], vy[2], vy[3], fy);
+}
+
+void generate_chunk(Vec p, Map_Chunk* chunk) {
+	game_log("generating chunk %d, %d ...", p.x, p.y);
+	chunk->last_access = game_turn_number;
+	for(uint y = 0; y < CHUNK_W; ++y) {
+		for(uint x = 0; x < CHUNK_W; ++x) {
+			auto* tile = &chunk->data[y][x];
+			tile->entity = 0;
+			tile->passable = true;
+			Vec mpos = {(int)(p.x * CHUNK_W + x), (int)(p.y * CHUNK_W + y)};
+			float scale = 0.1f;
+			float v = cubic_noise((float)mpos.x * scale, (float)mpos.y * scale);
+			if(v < 0.5) {
+				tile->tile = TILE(5, GREEN, BLACK);
+			} else {
+				tile->tile = TILE(',', YELLOW, BLACK);
+			}
+		}
+	}
+}
+
+void unload_chunks() {
+	if(game_turn_number < 10) {
+		return;
+	}
+	for(auto it = map_chunks.begin(); it != map_chunks.end(); ) {
+		auto p = it->first;
+		auto* chunk = it->second;
+		if(chunk->last_access < game_turn_number - 10) {
+			it = map_chunks.erase(it);
+			game_log("unloading chunk %d, %d ...", p.x, p.y);
+			//unload_chunk(pos);
+		} else ++it;
+	}
+}
+
+Map_Chunk* guarantee_chunk(Vec p) {
+	Map_Chunk* chunk;
+	if(map_chunks.count(p) == 0) {
+		chunk = new Map_Chunk();
+		map_chunks[p] = chunk;
+
+		generate_chunk(p, chunk);
+	}
+	chunk = map_chunks[p];
+	chunk->last_access = game_turn_number;
+	return chunk;
+}
+
+void split_pos(Vec p, Vec* chunk_p, Vec* inner_p) {
+	assert(CHUNK_W == 16);
+	chunk_p->x = p.x >> 4;
+	chunk_p->y = p.y >> 4;
+	inner_p->x = p.x & 0xf;
+	inner_p->y = p.y & 0xf;
+}
+
+template<typename F>
+Map_Tile* set_map(Vec p) {
+	Vec cp;
+	Vec ip;
+	split_pos(p, &cp, &ip);
+	auto* chunk = guarantee_chunk(cp);
+	return &chunk->data[ip.y][ip.x];
 }
 
 Map_Tile read_map(Vec p) {
-	const Map_Tile border = {{0xDB, 0xf0}, false};
-	if(not is_pos_valid(p)) {
-		return border;
+	static Vec cached_chunk_pos;
+	static Map_Chunk* cached_chunk = NULL;
+
+	Vec cp;
+	Vec ip;
+	split_pos(p, &cp, &ip);
+	Map_Chunk* chunk;
+	if(cached_chunk != NULL && cached_chunk_pos == cp) {
+		chunk = cached_chunk;
+	} else {
+		chunk = guarantee_chunk(cp);
 	}
-	return map[p.y][p.x];
+	return chunk->data[ip.y][ip.x];
 }
 
-void generate_map() {
+/*void generate_map() {
 	const Map_Tile floor = {{'.', 0xf0}, true};
 	const Map_Tile wall  = {{'#', 0xf0}, false};
 	for(uint y = 0; y < MAP_H; y++) {
@@ -213,7 +365,7 @@ void generate_map() {
 			}
 		}
 	}
-}
+}*/
 
 void set_screen(Vec pos, Screen_Tile val) {
 	if(memcmp(&screen[pos.y][pos.x], &val, sizeof(Screen_Tile)) != 0) {
@@ -244,14 +396,6 @@ void render_map() {
 	}
 }
 
-template<typename... Args>
-void game_log(const char* fmt, Args... args) {
-	uint len = snprintf(NULL, 0, fmt, args...) + 1;
-	if(len > ARRAY_LEN(log_buffer)) len = ARRAY_LEN(log_buffer);
-	memmove(log_buffer + len, log_buffer, ARRAY_LEN(log_buffer) - len);
-	snprintf(log_buffer, len, fmt, args...);
-}
-
 void render_ui() {
 	int bound_xh = gameview_w + gameview_x;
 	for(int y = 0; y < SCREEN_H; y++) {
@@ -279,7 +423,7 @@ void render_ui() {
 }
 
 void attack_entity(uint att_id, uint def_id) {
-	Entity* attacker = get_entity(att_id);
+	/*Entity* attacker = get_entity(att_id);
 	Entity* defender = get_entity(def_id);
 	assert(att_id != def_id);
 	if(att_id == player_entity) {
@@ -294,7 +438,8 @@ void attack_entity(uint att_id, uint def_id) {
 		game_log("%s died!", defender->type->name);
 		map[defender->pos.y][defender->pos.x].entity = 0;
 		defender->type = NULL;
-	}
+	}*/
+	//@TODO
 }
 
 void move_entity(uint id, Vec off) {
@@ -303,8 +448,8 @@ void move_entity(uint id, Vec off) {
 	assert(entity != NULL);
 
 	Vec pos = entity->pos;
-	assert(map[pos.y][pos.x].entity == id);
-	map[pos.y][pos.x].entity = 0;
+	//assert(map[pos.y][pos.x].entity == id);
+	//map[pos.y][pos.x].entity = 0;
 
 	pos.x += off.x;
 	pos.y += off.y;
@@ -312,16 +457,17 @@ void move_entity(uint id, Vec off) {
 	//@TODO line collision test
 	auto tile = read_map(pos);
 
-	if(tile.entity != 0) {
+	/*if(tile.entity != 0) {
 		attack_entity(id, tile.entity);
 	}
 
-	if(tile.passable && tile.entity == 0) {
+	if(tile.passable && tile.entity == 0) {*/
 		entity->pos = pos;
-	} else {
+	/*} else {
 		pos = entity->pos;
 	}
-	map[pos.y][pos.x].entity = id;
+	map[pos.y][pos.x].entity = id;*/
+	//@TODO
 }
 
 
@@ -341,11 +487,10 @@ Entity_Type goblin = {
 
 uint spawn_entity(const Entity_Type* type, Vec pos) {
 	assert(entity_num < ARRAY_LEN(entities));
-	assert(is_pos_valid(pos));
 
-	if(map[pos.y][pos.x].entity != 0) {
+	/*if(map[pos.y][pos.x].entity != 0) {
 		return 0;
-	}
+	}*/
 
 	auto* entity = &entities[entity_num];
 	entity->type = type;
@@ -355,7 +500,7 @@ uint spawn_entity(const Entity_Type* type, Vec pos) {
 	entity->dmg = type->dmg;
 	entity_num++;
 
-	map[pos.y][pos.x].entity = entity_num;
+	//map[pos.y][pos.x].entity = entity_num;
 
 	return entity_num;
 }
@@ -372,7 +517,7 @@ void spawn_goblins() {
 	}
 }
 
-void simulate_goblins() {
+/*void simulate_goblins() {
 	for(uint i = 0; i < entity_num; ++i) {
 		uint id = i + 1;
 		Entity* e = get_entity(id);
@@ -396,7 +541,7 @@ void simulate_goblins() {
 			}
 		}
 	}
-}
+}*/
 
 void handle_input() {
 	SDL_Event e;
@@ -405,7 +550,8 @@ void handle_input() {
         if(e.type == SDL_QUIT) {
             is_quitting = true;
         } else if(e.type == SDL_KEYDOWN) {
-			simulate_goblins();
+			//simulate_goblins();
+			game_turn_number++;
             switch(e.key.keysym.sym) {
                 case SDLK_UP:
                 move_entity(player_entity, {0, -1});
@@ -425,6 +571,7 @@ void handle_input() {
 
                 default: break;
             }
+            unload_chunks();
         }
     }
 }
@@ -473,9 +620,9 @@ int main()
 	}
 	DEFER { SDL_DestroyTexture(tileset); };
 
-	generate_map();
+	//generate_map();
 	spawn_player();
-	spawn_goblins();
+	//spawn_goblins();
 	memset(screen_redraw, 0xff, sizeof(screen_redraw));
 
 	uint t = 0;
